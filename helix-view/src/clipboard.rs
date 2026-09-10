@@ -31,6 +31,60 @@ pub enum ClipboardError {
 
 type Result<T> = std::result::Result<T, ClipboardError>;
 
+/// Use the editor's existing parser so focus, mouse and key events stay queued
+/// for the editor instead of being consumed by an external clipboard command.
+#[cfg(all(feature = "term", not(windows)))]
+pub fn read_termcode(
+    reader: &termina::EventReader,
+    clipboard_type: ClipboardType,
+) -> Result<String> {
+    use std::{
+        io::Write,
+        time::{Duration, Instant},
+    };
+    use termina::{
+        escape::osc::{Osc, Selection},
+        Event,
+    };
+
+    let (selection, target) = match clipboard_type {
+        ClipboardType::Clipboard => (Selection::CLIPBOARD, 'c'),
+        ClipboardType::Selection => (Selection::PRIMARY, 'p'),
+    };
+    let response = |event: &Event| {
+        matches!(
+            event,
+            Event::Osc(Osc::SelectionResponse(selection, _)) if selection.contains(target)
+        )
+    };
+    let _reply = reader.expect_osc52_reply();
+    // Discard already-buffered replies from earlier timed-out requests.
+    while reader.poll(Some(Duration::ZERO), response)? {
+        reader.read(response)?;
+    }
+    {
+        let mut stdout = std::io::stdout().lock();
+        write!(stdout, "{}", Osc::QuerySelection(selection))?;
+        stdout.flush()?;
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "terminal clipboard read timed out",
+            )
+            .into());
+        }
+        if reader.poll(Some(deadline - now), response)? {
+            if let Event::Osc(Osc::SelectionResponse(_, data)) = reader.read(response)? {
+                return Ok(String::from_utf8(data)?);
+            }
+        }
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub use external::ClipboardProvider;
 #[cfg(target_arch = "wasm32")]
