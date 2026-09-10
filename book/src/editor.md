@@ -84,6 +84,19 @@ For instance, setting it to use OSC 52 termcodes, the configuration would be:
 clipboard-provider = "termcode"
 ```
 
+On Unix, `termcode` supports both copying and reading the clipboard through OSC 52.
+Use `Space+p` / `Space+P` or the `+` register to paste; the `*` register requests
+the primary selection. The terminal must support and allow clipboard reads.
+Inside a terminal multiplexer, the multiplexer must also forward OSC 52 queries
+and responses. This uses the terminal clipboard even over SSH, without `pbpaste`,
+`wl-paste`, or an X11 connection on the remote host.
+
+Reads wait up to ten seconds. Keyboard, mouse, focus, and theme events received
+while waiting remain available to the editor. A denied or unsupported read times
+out; an empty clipboard is a successful read. Because OSC 52 has no request IDs,
+a response that arrives after a timeout and after another read has begun cannot
+be reliably distinguished from the new response.
+
 Alternatively, Helix can be configured to use arbitrary commands for clipboard integration:
 
 ```toml

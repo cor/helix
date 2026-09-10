@@ -132,6 +132,12 @@ impl Application {
             workspace_trust,
         );
         Self::load_configured_theme(&mut editor, &config.load(), &mut terminal, theme_mode);
+        #[cfg(all(not(windows), not(feature = "integration")))]
+        {
+            use termina::Terminal as _;
+            editor.registers.terminal_clipboard_reader =
+                Some(terminal.backend().terminal().event_reader());
+        }
 
         let keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
             &config.keys
@@ -1284,11 +1290,15 @@ impl Application {
         use termina::{escape::csi, Terminal as _};
         let reader = self.terminal.backend().terminal().event_reader();
         termina::EventStream::new(reader, |event| {
-            // Accept either non-escape sequences or theme mode updates.
+            // Wake the helper for clipboard replies too: a synchronous clipboard
+            // read must be able to acquire the shared reader even if this stream
+            // was already polling when the command ran. Late replies are ignored
+            // by handle_terminal_events, never interpreted as keyboard input.
             !event.is_escape()
                 || matches!(
                     event,
                     termina::Event::Csi(csi::Csi::Mode(csi::Mode::ReportTheme(_)))
+                        | termina::Event::Osc(termina::escape::osc::Osc::SelectionResponse(_, _))
                 )
         })
     }

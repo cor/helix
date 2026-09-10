@@ -28,6 +28,8 @@ pub struct Registers {
     /// efficiently prepend new values in `Registers::push`.
     inner: HashMap<char, Vec<String>>,
     clipboard_provider: Box<dyn DynAccess<ClipboardProvider>>,
+    #[cfg(all(feature = "term", not(windows)))]
+    pub terminal_clipboard_reader: Option<termina::EventReader>,
     pub last_search_register: char,
 }
 
@@ -36,6 +38,8 @@ impl Registers {
         Self {
             inner: Default::default(),
             clipboard_provider,
+            #[cfg(all(feature = "term", not(windows)))]
+            terminal_clipboard_reader: None,
             last_search_register: '/',
         }
     }
@@ -62,7 +66,10 @@ impl Registers {
                 Some(RegisterValues::new(iter::once(path)))
             }
             '*' | '+' => Some(read_from_clipboard(
-                &self.clipboard_provider.load(),
+                self.clipboard_contents(match name {
+                    '+' => ClipboardType::Clipboard,
+                    _ => ClipboardType::Selection,
+                }),
                 self.inner.get(&name),
                 match name {
                     '+' => ClipboardType::Clipboard,
@@ -112,10 +119,7 @@ impl Registers {
                     '*' => ClipboardType::Selection,
                     _ => unreachable!(),
                 };
-                let contents = self
-                    .clipboard_provider
-                    .load()
-                    .get_contents(&clipboard_type)?;
+                let contents = self.clipboard_contents(clipboard_type)?;
                 let saved_values = self.inner.entry(name).or_default();
 
                 if !contents_are_saved(saved_values, &contents) {
@@ -217,14 +221,25 @@ impl Registers {
     pub fn clipboard_provider_name(&self) -> String {
         self.clipboard_provider.load().name().into_owned()
     }
+
+    fn clipboard_contents(&self, clipboard_type: ClipboardType) -> Result<String, ClipboardError> {
+        let provider = self.clipboard_provider.load();
+        #[cfg(all(feature = "term", not(windows)))]
+        if matches!(&*provider, ClipboardProvider::Termcode) {
+            if let Some(reader) = &self.terminal_clipboard_reader {
+                return crate::clipboard::read_termcode(reader, clipboard_type);
+            }
+        }
+        provider.get_contents(&clipboard_type)
+    }
 }
 
 fn read_from_clipboard<'a>(
-    provider: &ClipboardProvider,
+    contents: Result<String, ClipboardError>,
     saved_values: Option<&'a Vec<String>>,
     clipboard_type: ClipboardType,
 ) -> RegisterValues<'a> {
-    match provider.get_contents(&clipboard_type) {
+    match contents {
         Ok(contents) => {
             // If we're pasting the same values that we just yanked, re-use
             // the saved values. This allows pasting multiple selections
